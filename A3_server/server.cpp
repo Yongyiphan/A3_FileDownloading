@@ -5,6 +5,7 @@
 #include "../taskqueue.h"
 #include "../Utils.h"
 #include <fstream>
+#include <sstream>
 
 
 #define DEV
@@ -51,11 +52,8 @@ void Start() {
   SocketInfo* TCPsoc = &serverTCP.sinfo;
   SecureZeroMemory(&hints, sizeof(hints));
   hints.ai_family = AF_INET;        // IPv4
-  // For UDP use SOCK_DGRAM instead of SOCK_STREAM.
   hints.ai_socktype = SOCK_STREAM;  // Reliable delivery
-  // Could be 0 for autodetect, but reliable delivery over IPv4 is always TCP.
   hints.ai_protocol = IPPROTO_TCP;  // TCP
-  // Create a passive socket that is suitable for bind() and listen().
   hints.ai_flags = AI_PASSIVE;
   char hostname[512];
   if (gethostname(hostname, 512) == SOCKET_ERROR)
@@ -66,18 +64,20 @@ void Start() {
   TCPsoc->CreateSocket(hostname, ServerTCP_Port, hints);
   TCPsoc->Bind();
 
-  auto sinfo = reinterpret_cast<sockaddr_in*>(TCPsoc->a_info->ai_addr);
-  sinfo->sin_port = u_short(std::stol(TCPsoc->PortStr, NULL, 0));
-  serverTCP.Data(GetIPAddress(sinfo));
-
   hints.ai_socktype = SOCK_DGRAM;
   hints.ai_protocol = IPPROTO_UDP;
   SocketInfo* UDPsoc = &serverUDP.sinfo;
   UDPsoc->CreateSocket(hostname, ServerUDP_Port, hints);
   UDPsoc->Bind();
+
+  auto sinfo = reinterpret_cast<sockaddr_in*>(TCPsoc->a_info->ai_addr);
+  sinfo->sin_port = u_short(std::stol(TCPsoc->PortStr, NULL, 0));
+  serverTCP.Data(GetIPAddress(sinfo));
+
   sinfo = reinterpret_cast<sockaddr_in*>(UDPsoc->a_info->ai_addr);
   sinfo->sin_port = u_short(std::stol(UDPsoc->PortStr, NULL, 0));
   serverUDP.Data(GetIPAddress(sinfo));
+
   std::cout << "Server IP Address: " << GetIPAddress(sinfo, false) << "\n";
   std::cout << "Server TCP Port Number: " << TCPsoc->PortStr << "\n";
   std::cout << "Server UDP Port Number: " << UDPsoc->PortStr << "\n";
@@ -118,20 +118,6 @@ void TCP_Server_Run() {
     tq.produce(clientSocket);
   }
 
-  while (serverTCP.sinfo.soc != INVALID_SOCKET)
-  {
-    sockaddr clientAddress{};
-    SecureZeroMemory(&clientAddress, sizeof(clientAddress));
-    int clientAddressSize = sizeof(clientAddress);
-    SOCKET clientSocket = accept(serverUDP.sinfo.soc, &clientAddress, &clientAddressSize);
-    if (clientSocket == INVALID_SOCKET)
-    {
-      break;
-    }
-    sockaddr_in* sinfo = reinterpret_cast<sockaddr_in*>(&clientAddress);
-    StoreUDPConnection(sinfo, clientSocket);
-    tq.produce(clientSocket);
-  }
 #if defined(DEV)
   std::cout << "Exiting TCP Run\n";
 #endif
@@ -153,6 +139,8 @@ bool ExecuteSocket(SOCKET soc) {
     };
   conn = FindCon(soc);
   if (!conn)return false;
+  u_long mode = 1;
+  ioctlsocket(soc, FIONBIO, &mode);
   int bytesReceieved{ SOCKET_ERROR };
   while (stay) {
     bytesReceieved = recv(soc, buffer, BUF_LEN - 1, 0);
@@ -160,6 +148,7 @@ bool ExecuteSocket(SOCKET soc) {
       ErrMsg("recv()"); break;
     };
     if (bytesReceieved == 0) {
+      std::lock_guard<std::mutex> clientLock{ _stdoutMutex };
       std::cerr << "Graceful shutdown.\n";
       break;
     }
@@ -225,13 +214,12 @@ bool ExecuteSocket(SOCKET soc) {
         size_t dataIndex = 0;
         while (dataIndex < File_ListV.size()) {
           size_t chunksize = std::min<size_t>(BUF_LEN - 7, File_ListV.size() - dataIndex);
-          if(dataIndex > 0) ChunkBuffer.clear();
+          if (dataIndex > 0) ChunkBuffer.clear();
           ChunkBuffer.insert(ChunkBuffer.end(), File_ListV.begin() + dataIndex, File_ListV.begin() + dataIndex + chunksize);
           send(soc, ChunkBuffer.data(), ChunkBuffer.size(), 0);
           dataIndex += chunksize;
         }
 
-        //sendListFile(soc, no_files, current, buffer);
       }
     }
     else if (commandID == RSP_DOWNLOAD) {
@@ -249,22 +237,10 @@ bool ExecuteSocket(SOCKET soc) {
 // target port no
       uint16_t target_port = ntohl(*reinterpret_cast<uint16_t*>(&buffer[5]));
 
-      SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-      sockaddr_in clientAddr;
-      memset(&clientAddr, 0, sizeof(clientAddr));
-      clientAddr.sin_family = AF_INET;
-      clientAddr.sin_port = htons(target_port);
-      clientAddr.sin_addr.s_addr = *reinterpret_cast<uint32_t*>(&buffer[1]);
-      buffer[0] = CMDID::RSP_DOWNLOAD;
-      send(soc, buffer, 1, 0);
+      std::stringstream ss;
+      ss << serverTCP.IPS << ":" << target_port << std::endl;
+      ReplyFormat(ss.str());
 
-      char fileBuffer[1024]; // Adjust buffer size as needed
-      while (file.read(fileBuffer, sizeof(fileBuffer))) {
-        sendto(udpSocket, fileBuffer, file.gcount(), 0, (struct sockaddr*)&clientAddr, sizeof(clientAddr));
-      }
-
-      closesocket(udpSocket);
-      file.close();
 
     }
   }

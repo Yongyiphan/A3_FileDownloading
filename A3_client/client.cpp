@@ -68,6 +68,10 @@ bool ConnectToServer() {
     return false;
   }
   clientTCPCon.Data(ClientIP, ServerTCP_Port);
+
+  hints.ai_socktype = SOCK_DGRAM;
+  hints.ai_protocol = IPPROTO_UDP;
+  clientUDPCon.sinfo.CreateSocket(ClientIP, ServerUDP_Port, hints);
   clientUDPCon.Data(ClientIP, ClientUDP);
 
   return true;
