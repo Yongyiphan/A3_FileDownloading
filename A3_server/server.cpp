@@ -216,10 +216,22 @@ bool ExecuteSocket(SOCKET soc) {
         ChunkBuffer.reserve(BUF_LEN);
         ChunkBuffer.push_back(static_cast<char>(commandID));
         uint16_t NW_FileCount = htons(no_files);
-        uint32_t NW_FileLenght = htonl();
-        
+        uint32_t NW_FileLength = htonl(File_ListV.size());
+        char* fileCountPtr = reinterpret_cast<char*>(&NW_FileCount);
+        char* filelengthPtr = reinterpret_cast<char*>(&NW_FileLength);
+        ChunkBuffer.insert(ChunkBuffer.end(), fileCountPtr, fileCountPtr + sizeof(uint16_t));
+        ChunkBuffer.insert(ChunkBuffer.end(), filelengthPtr, filelengthPtr + sizeof(uint32_t));
 
-        sendListFile(soc, no_files, current, buffer);
+        size_t dataIndex = 0;
+        while (dataIndex < File_ListV.size()) {
+          size_t chunksize = std::min<size_t>(BUF_LEN - 7, File_ListV.size() - dataIndex);
+          if(dataIndex > 0) ChunkBuffer.clear();
+          ChunkBuffer.insert(ChunkBuffer.end(), File_ListV.begin() + dataIndex, File_ListV.begin() + dataIndex + chunksize);
+          send(soc, ChunkBuffer.data(), ChunkBuffer.size(), 0);
+          dataIndex += chunksize;
+        }
+
+        //sendListFile(soc, no_files, current, buffer);
       }
     }
     else if (commandID == RSP_DOWNLOAD) {

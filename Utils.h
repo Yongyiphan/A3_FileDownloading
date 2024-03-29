@@ -76,6 +76,7 @@ struct Connection {
 
 
 constexpr size_t BUF_LEN{ SO_RCVBUF };
+//constexpr size_t BUF_LEN{ 10 };
 constexpr uint32_t FILE_LIMIT{ 100 * 1024 };
 inline std::vector<Connection> TCP_List, UDP_List;
 

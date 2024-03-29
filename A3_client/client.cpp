@@ -198,23 +198,33 @@ void ServerReply() {
       uint16_t no_files = ntohs(*reinterpret_cast<uint16_t*>(&buffer[1]));
       uint32_t fileList_len = ntohl(*reinterpret_cast<uint32_t*>(&buffer[3]));
       std::stringstream ss;
+      size_t headerSize = 7;
+      std::vector<char> RecvBuffer;
+      RecvBuffer.reserve(fileList_len);
+      size_t offset = headerSize;
+      RecvBuffer.insert(RecvBuffer.end(), buffer + offset, buffer + offset + bytesRecv - headerSize);
+      size_t totalReceived = bytesRecv - headerSize;
+      while (totalReceived < fileList_len) {
+        memset(buffer, 0, BUF_LEN);
+        bytesRecv = recv(clientTCPCon.sinfo.soc, buffer, BUF_LEN - 1, 0);
+        RecvBuffer.insert(RecvBuffer.end(), buffer, buffer + bytesRecv);
+        totalReceived += bytesRecv;
+      }
+
       ss << "# of Files: " << std::to_string(no_files) << "\n";
-      for (int i{}, offset = 7; i < no_files; ++i) {
-        uint32_t filename_len;
-        memcpy(&filename_len, buffer + offset, sizeof(uint32_t));
-        filename_len = ntohl(filename_len);
-        char* filename = new char[filename_len + 1] {};
-        memcpy(filename, buffer + offset + 4, filename_len);
-        offset += 4 + filename_len;
+      for (int i{}, offset = 0; i < no_files; ++i) {
+        uint32_t filename_len = ntohl(*reinterpret_cast<uint32_t*>(&RecvBuffer[offset]));
+        std::string filename(RecvBuffer.data() + offset + sizeof(uint32_t), filename_len);
         ss << std::to_string(i + 1) << "-th file: " << filename;
         ss << "\n";
-        delete[] filename;
+        offset += sizeof(uint32_t) + filename_len;
       }
       std::string message;
       if (no_files) {
         message = ss.str();
         message.pop_back();
       }
+
       ReplyFormat(message);
     }
     else if (commandID == RSP_DOWNLOAD) {
