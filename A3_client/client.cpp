@@ -1,10 +1,12 @@
 
 #include <iostream>
 #include <string>
+#include "../taskqueue.h"
 #include "../Utils.h"
 #include <thread>
 #include <fstream>
 #include <sstream>
+
 
 #define DEV
 Connection clientUDPCon, clientTCPCon, serverCon;
@@ -72,7 +74,13 @@ bool ConnectToServer() {
   hints.ai_socktype = SOCK_DGRAM;
   hints.ai_protocol = IPPROTO_UDP;
   clientUDPCon.sinfo.CreateSocket(ClientIP, ServerUDP_Port, hints);
+  if (clientUDPCon.sinfo.Connect() == SOCKET_ERROR)
+  {
+    ErrMsg("connect()");
+    return false;
+  }
   clientUDPCon.Data(ClientIP, ClientUDP);
+  //clientUDPCon.sinfo.Bind();
 
   return true;
 }
@@ -92,6 +100,7 @@ void ClientInput() {
   CMDID commandID{ CMDID::UNKNOWN };
   int bytesSent;
   while (true) {
+    std::cout << "Command Prompt> ";
     std::getline(std::cin, clientMsg);
     if (clientMsg.empty())continue;
     std::istringstream iss(clientMsg);
@@ -112,33 +121,33 @@ void ClientInput() {
 #if defined(DEV)
         std::cout << "REQ_DOWNLOAD\n";
 #endif
+        // Validate IP Address + port
+        if(IPSFull.empty())continue;
+        if (IPSFull.find(':') == std::string::npos) {
+          continue;
+        }
+        std::string targetIP = IPSFull.substr(0, IPSFull.find(':'));
+        std::string targetPN = IPSFull.substr(IPSFull.find(':') + 1);
+        uint32_t targetIP_Host;
+        if (inet_pton(AF_INET, targetIP.c_str(), &targetIP_Host) != 1)continue;
+        uint16_t targetPN_Network{htons(static_cast<uint16_t>(std::stol(targetPN)))};
+        uint32_t targetIP_Network{htonl(targetIP_Host)};
 
         /*
           4 -> IP
           2 -> Port
           4 -> filename length
           n -> filename
+          Note: no need for buffer overflow handle, not realistic for a filename to be that long
+          Buffer is already like 4k
         */
         buffer[0] = commandID;
-        memcpy(buffer + 1, &clientTCPCon.NIP32, sizeof(uint32_t));
-        memcpy(buffer + 5, &clientUDPCon.NP16, sizeof(uint16_t));
-        uint32_t filenamelen = static_cast<uint32_t>(FileName.length());
-        uint32_t nfilenamelen = htonl(filenamelen);
-        memcpy(buffer + 7, &nfilenamelen, sizeof(uint32_t));
-        memcpy(buffer + 11, FileName.data(), filenamelen);
-        send(clientTCPCon.sinfo.soc, buffer, 11 + filenamelen, 0);
-
-        int udpSocket = socket(AF_INET, SOCK_DGRAM, 0);
-        sockaddr_in clientAddr;
-        memset(&clientAddr, 0, sizeof(clientAddr));
-        clientAddr.sin_family = AF_INET;
-        clientAddr.sin_port = htons(static_cast<u_short>(std::stol(ClientUDP))); // Convert port number to network byte order
-        clientAddr.sin_addr.s_addr = htonl(INADDR_ANY); // Listen on any IP address
-
-        if (bind(udpSocket, (struct sockaddr*)&clientAddr, sizeof(clientAddr)) < 0) {
-          closesocket(udpSocket);
-          return;
-        }
+        memcpy(buffer + 1, &targetIP_Network, sizeof(uint32_t));
+        memcpy(buffer + 5, &targetPN_Network, sizeof(uint16_t));
+        uint32_t fn_len_Network = htonl(static_cast<uint32_t>(FileName.length()));
+        memcpy(buffer + 7, &fn_len_Network, sizeof(uint32_t));
+        memcpy(buffer + 11, FileName.data(), FileName.length());
+        send(clientTCPCon.sinfo.soc, buffer, 11 + FileName.length(), 0);
 
       }
       else if (commandID == CMDID::REQ_LISTFILES) {
@@ -151,6 +160,7 @@ void ClientInput() {
       }
     }
   }
+  std::lock_guard<std::mutex> clientLock{_stdoutMutex};
 }
 
 bool ValidateCommand(std::string const& msg, CMDID& cid) {
@@ -235,13 +245,14 @@ void ServerReply() {
 #ifdef DEV
       std::cout << "RSP_DOWNLOAD\n";
 #endif
-      uint32_t IP_ = *reinterpret_cast<uint32_t*>(&buffer[1]);
-      uint16_t PN_ = *reinterpret_cast<uint16_t*>(&buffer[5]);
+      uint32_t IP_ = ntohl(*reinterpret_cast<uint32_t*>(&buffer[1]));
+      uint16_t PN_ = ntohs(*reinterpret_cast<uint16_t*>(&buffer[5]));
       uint32_t SID = *reinterpret_cast<uint32_t*>(&buffer[7]);
       uint32_t LEN = *reinterpret_cast<uint32_t*>(&buffer[11]);
-      PN_ = ntohs(PN_);
-      LEN = ntohl(LEN);
+      Connection UDPCon(IP_, PN_);
 
+      std::cout << "\nNow listening for messages on " << UDPCon.IPFull << "...\n";
+      std::cout << "Start UDP Session\n";
       std::ofstream outputFile(StorePath, std::ios::binary);
 
     }

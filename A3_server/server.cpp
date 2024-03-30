@@ -145,6 +145,10 @@ bool ExecuteSocket(SOCKET soc) {
   while (stay) {
     bytesReceieved = recv(soc, buffer, BUF_LEN - 1, 0);
     if (bytesReceieved == SOCKET_ERROR) {
+      if (WSAGetLastError() == WSAEWOULDBLOCK) {
+        //std::this_thread::sleep_for(100ms);
+        continue;
+      }
       ErrMsg("recv()"); break;
     };
     if (bytesReceieved == 0) {
@@ -235,7 +239,7 @@ bool ExecuteSocket(SOCKET soc) {
       std::cout << "Opening: " << DL_File.string() << std::endl;
 #endif
 // target port no
-      uint16_t target_port = ntohl(*reinterpret_cast<uint16_t*>(&buffer[5]));
+      uint16_t target_port = ntohs(*reinterpret_cast<uint16_t*>(&buffer[5]));
 
       std::stringstream ss;
       ss << serverTCP.IPS << ":" << target_port << std::endl;

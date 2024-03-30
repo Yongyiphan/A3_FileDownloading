@@ -81,7 +81,7 @@ void Connection::Data(std::string const& p_IP, std::string const& p_Port) {
 
 }
 
-void Connection::Data(uint32_t p_IP, uint32_t p_P, bool host) {
+void Connection::Data(uint32_t p_IP, uint16_t p_P, bool host) {
   if (host) {
     HIP32 = p_IP;
     HP16 = p_P;

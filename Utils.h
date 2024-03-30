@@ -26,6 +26,9 @@
 #endif
 #include <string>
 #include <vector>
+#include <chrono>
+#include <mutex>
+#include <atomic>
 
 enum CMDID {
   UNKNOWN = (unsigned char)0x0,//not used
@@ -59,12 +62,13 @@ struct Connection {
   SocketInfo sinfo;
   Connection() = default;
   Connection(std::string const& FullIP) { Data(FullIP); }
+  Connection(uint32_t I, uint16_t P) {Data(I, P); }
   // Setup connection using IP:Port
   void Data(std::string const&);
   // Setup connection using IP string, Port string
   void Data(std::string const&, std::string const&);
   // Setup connection using IP int, Port int
-  void Data(uint32_t, uint32_t, bool host);
+  void Data(uint32_t, uint16_t, bool host = false);
   void StrToByte();
   void ByteToStr();
   void Cleanup();
@@ -79,6 +83,7 @@ constexpr size_t BUF_LEN{ SO_RCVBUF };
 //constexpr size_t BUF_LEN{ 10 };
 constexpr uint32_t FILE_LIMIT{ 100 * 1024 };
 inline std::vector<Connection> TCP_List, UDP_List;
+using namespace std::chrono_literals;
 
 
 
