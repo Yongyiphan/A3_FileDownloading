@@ -28,6 +28,7 @@
 #include <vector>
 #include <chrono>
 #include <mutex>
+#include <filesystem>
 #include <atomic>
 
 enum CMDID {
@@ -49,6 +50,7 @@ struct SocketInfo {
   int CreateSocket(std::string const& IPAddress_Short, std::string const& Port, addrinfo const& hints);
   int CreateSocket(std::string const& Port, addrinfo const& hints);
   int Bind();
+  int Bind(sockaddr_in*, size_t Len);
   int Connect();
 };
 
@@ -62,7 +64,7 @@ struct Connection {
   SocketInfo sinfo;
   Connection() = default;
   Connection(std::string const& FullIP) { Data(FullIP); }
-  Connection(uint32_t I, uint16_t P) {Data(I, P); }
+  Connection(uint32_t I, uint16_t P) { Data(I, P); }
   // Setup connection using IP:Port
   void Data(std::string const&);
   // Setup connection using IP string, Port string
@@ -83,7 +85,17 @@ constexpr size_t BUF_LEN{ SO_RCVBUF };
 //constexpr size_t BUF_LEN{ 10 };
 constexpr uint32_t FILE_LIMIT{ 100 * 1024 };
 inline std::vector<Connection> TCP_List, UDP_List;
+namespace fs = std::filesystem;
 using namespace std::chrono_literals;
+
+struct UDPMessage {
+  uint32_t SessionID;
+  uint8_t Flags;
+  uint32_t SeqNo, FileLen, FileOffset{}, FileDataLen;
+  std::vector<char> FileData;
+  size_t Size(){return sizeof(uint32_t) * 5 + sizeof(uint8_t) + FileData.size();}
+  void CreateBuffer(char*);
+};
 
 
 
@@ -93,7 +105,7 @@ void StoreTCPConnection(sockaddr_in*, SOCKET soc);
 void StoreUDPConnection(sockaddr_in*, SOCKET soc);
 
 void ErrMsg(std::string const&);
-std::string GetIPAddress(sockaddr_in*, bool  = true);
+std::string GetIPAddress(sockaddr_in*, bool = true);
 void PrintIPAddress(std::string const& prefix, sockaddr_in* sinfo);
 void ReplyFormat(std::string const& msg);
 #endif

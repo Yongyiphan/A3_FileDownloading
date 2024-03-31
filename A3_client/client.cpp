@@ -1,4 +1,16 @@
-
+/*****************************************************************//**
+ * \file            client.cpp
+ * \author(s)       Edgar Yong (y.yiphanedgar\@digipen.edu) (2202206)
+ * \author(s)       Geoffrey Cho (g.cho\@digipen.edu) ()
+ * \date            31 March 2024
+ * \brief           Multi threaded client.
+ *                  Client inputs request to server.
+ *                  Commands Available
+ *                      /d for downloading a file
+ *                      /l for listing available files at specified directory
+ *
+ * \copyright       All content © 2024 DigiPen Institute of Technology Singapore. All Rights Reserved
+ *********************************************************************/
 #include <iostream>
 #include <string>
 #include "../taskqueue.h"
@@ -9,13 +21,15 @@
 
 
 #define DEV
-Connection clientUDPCon, clientTCPCon, serverCon;
+Connection clientUDPCon, clientTCPCon;
 std::string ClientIP{}, ClientUDP{};
 std::string ServerTCP_Port{};
 std::string ServerUDP_Port{};
 std::string StorePath{};
 int Slide_WindowSize{};
 float Loss_Rate{};
+
+sockaddr_in UDPSocketAddr;
 
 
 bool ConnectToServer();
@@ -27,7 +41,7 @@ void ServerReply();
 
 int main(int argc, char** argv) {
   StartWSA();
-  Ask("Sever IP Address: ", ClientIP, "192.168.5.1");
+  Ask("Server IP Address: ", ClientIP, "192.168.5.1");
   Ask("Server TCP Port Number: ", ServerTCP_Port, "9000");
   Ask("Server UDP Port Number: ", ServerUDP_Port, "9001");
   Ask("Client UDP Port Number: ", ClientUDP, "9010");
@@ -36,17 +50,20 @@ int main(int argc, char** argv) {
   Ask("Packet loss rate: ", Loss_Rate, 0.2);
   bool Connected;
   int Tries{};
-  while (!ConnectToServer() && Tries < 4) {
+  while (!(Connected = ConnectToServer()) && Tries < 4) {
     std::this_thread::sleep_for(std::chrono::seconds(2));
 #ifdef DEV
     std::cout << "Tying to connect to Server\n";
 #endif
     Tries++;
   }
+  if (Connected) {
 #ifdef DEV
-  std::cout << "Connected To Server\n";
+    std::cout << "Connected To Server\n";
 #endif
-  Communicate();
+    Communicate();
+
+  }
 
   EndWSA();
   return 0;
@@ -56,13 +73,13 @@ int main(int argc, char** argv) {
 bool ConnectToServer() {
   std::cout << "IP Address: " << ClientIP << "\n";
   std::cout << "Port Number: " << ServerTCP_Port << "\n";
-  addrinfo hints;
-  SecureZeroMemory(&hints, sizeof(hints));
-  hints.ai_family = AF_INET;
-  hints.ai_socktype = SOCK_STREAM;
-  hints.ai_protocol = IPPROTO_TCP;
-  hints.ai_flags = AI_PASSIVE;
-  clientTCPCon.sinfo.CreateSocket(ClientIP, ServerTCP_Port, hints);
+  addrinfo TCPhints, UDPhints;
+  SecureZeroMemory(&TCPhints, sizeof(TCPhints));
+  TCPhints.ai_family = AF_INET;
+  TCPhints.ai_socktype = SOCK_STREAM;
+  TCPhints.ai_protocol = IPPROTO_TCP;
+  TCPhints.ai_flags = AI_PASSIVE;
+  clientTCPCon.sinfo.CreateSocket(ClientIP, ServerTCP_Port, TCPhints);
 
   if (clientTCPCon.sinfo.Connect() == SOCKET_ERROR)
   {
@@ -71,16 +88,28 @@ bool ConnectToServer() {
   }
   clientTCPCon.Data(ClientIP, ServerTCP_Port);
 
-  hints.ai_socktype = SOCK_DGRAM;
-  hints.ai_protocol = IPPROTO_UDP;
-  clientUDPCon.sinfo.CreateSocket(ClientIP, ServerUDP_Port, hints);
+  SecureZeroMemory(&UDPhints, sizeof(UDPhints));
+  UDPhints.ai_family = AF_INET;
+  UDPhints.ai_socktype = SOCK_DGRAM;
+  UDPhints.ai_protocol = IPPROTO_UDP;
+  UDPhints.ai_flags = AI_PASSIVE;
+  clientUDPCon.sinfo.CreateSocket(ClientIP, ServerUDP_Port, UDPhints);
+  SecureZeroMemory(&UDPSocketAddr, sizeof(UDPSocketAddr));
+  UDPSocketAddr.sin_family = AF_INET;
+  UDPSocketAddr.sin_port = htons(static_cast<uint16_t>(std::stol(ClientUDP)));
+  clientUDPCon.sinfo.Bind(&UDPSocketAddr, sizeof(UDPSocketAddr));
   if (clientUDPCon.sinfo.Connect() == SOCKET_ERROR)
   {
     ErrMsg("connect()");
     return false;
   }
   clientUDPCon.Data(ClientIP, ClientUDP);
-  //clientUDPCon.sinfo.Bind();
+
+
+  freeaddrinfo(clientTCPCon.sinfo.a_info);
+  freeaddrinfo(clientUDPCon.sinfo.a_info);
+  clientTCPCon.sinfo.a_info = NULL;
+  clientUDPCon.sinfo.a_info = NULL;
 
   return true;
 }
@@ -90,8 +119,9 @@ void Communicate() {
   //ioctlsocket(con->sinfo.soc, FIONBIO, &mode);
   std::cout << std::endl;
   std::thread InputThread(ClientInput);
-  ServerReply();
+  std::thread ReplyThread(ServerReply);
   InputThread.join();
+  ReplyThread.join();
 }
 
 void ClientInput() {
@@ -99,8 +129,8 @@ void ClientInput() {
   std::string clientMsg{};
   CMDID commandID{ CMDID::UNKNOWN };
   int bytesSent;
+  std::cout << "Command Prompt> ";
   while (true) {
-    std::cout << "Command Prompt> ";
     std::getline(std::cin, clientMsg);
     if (clientMsg.empty())continue;
     std::istringstream iss(clientMsg);
@@ -122,7 +152,7 @@ void ClientInput() {
         std::cout << "REQ_DOWNLOAD\n";
 #endif
         // Validate IP Address + port
-        if(IPSFull.empty())continue;
+        if (IPSFull.empty())continue;
         if (IPSFull.find(':') == std::string::npos) {
           continue;
         }
@@ -130,8 +160,8 @@ void ClientInput() {
         std::string targetPN = IPSFull.substr(IPSFull.find(':') + 1);
         uint32_t targetIP_Host;
         if (inet_pton(AF_INET, targetIP.c_str(), &targetIP_Host) != 1)continue;
-        uint16_t targetPN_Network{htons(static_cast<uint16_t>(std::stol(targetPN)))};
-        uint32_t targetIP_Network{htonl(targetIP_Host)};
+        uint16_t targetPN_Network{ htons(static_cast<uint16_t>(std::stol(targetPN))) };
+        uint32_t targetIP_Network{ htonl(targetIP_Host) };
 
         /*
           4 -> IP
@@ -160,7 +190,7 @@ void ClientInput() {
       }
     }
   }
-  std::lock_guard<std::mutex> clientLock{_stdoutMutex};
+  std::lock_guard<std::mutex> clientLock{ _stdoutMutex };
 }
 
 bool ValidateCommand(std::string const& msg, CMDID& cid) {
@@ -225,7 +255,7 @@ void ServerReply() {
         totalReceived += bytesRecv;
       }
 
-      ss << "# of Files: " << std::to_string(no_files) << "\n";
+      ss << "\n# of Files: " << std::to_string(no_files) << "\n";
       for (int i{}, offset = 0; i < no_files; ++i) {
         uint32_t filename_len = ntohl(*reinterpret_cast<uint32_t*>(&RecvBuffer[offset]));
         std::string filename(RecvBuffer.data() + offset + sizeof(uint32_t), filename_len);
@@ -248,13 +278,58 @@ void ServerReply() {
       uint32_t IP_ = ntohl(*reinterpret_cast<uint32_t*>(&buffer[1]));
       uint16_t PN_ = ntohs(*reinterpret_cast<uint16_t*>(&buffer[5]));
       uint32_t SID = *reinterpret_cast<uint32_t*>(&buffer[7]);
-      uint32_t LEN = *reinterpret_cast<uint32_t*>(&buffer[11]);
+      uint32_t LEN = ntohl(*reinterpret_cast<uint32_t*>(&buffer[11]));
+      uint32_t FN_LEN = ntohl(*reinterpret_cast<uint32_t*>(&buffer[15]));
+      std::string FileName(buffer + 19, FN_LEN);
       Connection UDPCon(IP_, PN_);
 
-      std::cout << "\nNow listening for messages on " << UDPCon.IPFull << "...\n";
+      std::cout << "\nNow listening for messages on " << UDPCon.IPFull << " ...\n";
       std::cout << "Start UDP Session\n";
-      std::ofstream outputFile(StorePath, std::ios::binary);
+      fs::path outputfile = fs::path(StorePath) / FileName;
+
+      std::ofstream oFile(outputfile, std::ios::binary | std::ios::out);
+      if (!oFile) {
+        std::cout << "Unable to open File\n";
+      }
+      UDPMessage UDPChunk{};
+      int UDPServerAddrSize = sizeof(UDPSocketAddr);
+      int DGRAM_Recv{};
+      std::vector<char> FileData;
+      uint32_t currentReceived{};
+      while ((DGRAM_Recv = recvfrom(clientUDPCon.sinfo.soc, buffer, BUF_LEN - 1, 0, (struct sockaddr*)&UDPSocketAddr, &UDPServerAddrSize))) {
+        UDPChunk.SessionID = ntohl(*reinterpret_cast<uint32_t*>(&buffer));
+        UDPChunk.Flags = *reinterpret_cast<uint32_t*>(&buffer[4]);
+        UDPChunk.SeqNo = *reinterpret_cast<uint32_t*>(&buffer[5]);
+        UDPChunk.FileLen = *reinterpret_cast<uint32_t*>(&buffer[9]);
+        UDPChunk.FileOffset = *reinterpret_cast<uint32_t*>(&buffer[13]);
+        UDPChunk.FileDataLen = *reinterpret_cast<uint32_t*>(&buffer[17]);
+        FileData.insert(FileData.end(), buffer + 21, buffer + 21 + UDPChunk.FileDataLen);
+        currentReceived += UDPChunk.FileDataLen;
+        if (currentReceived == UDPChunk.FileLen) {
+          break;
+        }
+        memset(buffer, '\0', BUF_LEN);
+      }
+
+      oFile.seekp(UDPChunk.FileOffset, std::ios::beg);
+      oFile.write(FileData.data(), UDPChunk.FileLen);
+      if (!oFile) {
+        ErrMsg("write()");
+      }
+      oFile.close();
+
+
+      // Reply to server
+      //memset(buffer, '\0', BUF_LEN);
+      //uint32_t SID_Network = htonl(UDPChunk.SessionID);
+      //memcpy(buffer, &SID_Network, sizeof(uint32_t));
+      //uint8_t Flag = 1;
+      //memcpy(buffer + 4, &Flag, sizeof(uint8_t));
+      
+
+
 
     }
+    std::cout << "Command Prompt> ";
   }
 }

@@ -40,7 +40,16 @@ int SocketInfo::Bind() {
     ErrMsg("bind()");
     closesocket(soc);
   }
-  freeaddrinfo(a_info);
+  return errCode;
+}
+
+int SocketInfo::Bind(sockaddr_in* Addr, size_t LEN) {
+  int errCode = bind(soc, reinterpret_cast<sockaddr*>(Addr), LEN);
+  if (errCode != NO_ERROR)
+  {
+    ErrMsg("bind()");
+    closesocket(soc);
+  }
   return errCode;
 }
 
@@ -117,6 +126,16 @@ void Connection::ByteToStr() {
   }
 }
 
+void UDPMessage::CreateBuffer(char* buffer) {
+  memcpy(buffer, &SessionID, sizeof(uint32_t));
+  memcpy(buffer + 4,  &Flags, sizeof(uint8_t));
+  memcpy(buffer + 5,  &SeqNo, sizeof(uint32_t));
+  memcpy(buffer + 9,  &FileLen, sizeof(uint32_t));
+  memcpy(buffer + 13, &FileOffset, sizeof(uint32_t));
+  memcpy(buffer + 17, &FileDataLen, sizeof(uint32_t));
+  memcpy(buffer + 21, FileData.data(), FileDataLen);
+}
+
 void StoreTCPConnection(sockaddr_in* info, SOCKET soc) {
   std::string clientIP = GetIPAddress(info);
   PrintIPAddress("Client", info);
@@ -166,7 +185,7 @@ std::string GetIPAddress(sockaddr_in* sinfo, bool Full) {
   inet_ntop(AF_INET, &(sinfo->sin_addr), IP, INET_ADDRSTRLEN);
   if(!Full){return {IP}; }
   std::stringstream ss(IP);
-  ss << IP << ":" << std::to_string(sinfo->sin_port);
+  ss << IP << ":" << std::to_string(ntohs(sinfo->sin_port));
   return ss.str();
 }
 void PrintIPAddress(std::string const& prefix, sockaddr_in* sinfo) {
@@ -184,7 +203,7 @@ void ErrMsg(std::string const& err) {
 }
 
 void ReplyFormat(std::string const& msg) {
-  std::cout << "==========RECV START==========\n\n";
+  std::cout << "==========RECV START==========\n";
   std::cout << msg << "\n";
   std::cout << "==========RECV END==========" << std::endl;
 }

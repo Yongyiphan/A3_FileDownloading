@@ -1,6 +1,5 @@
 #include <iostream>
 #include <string>
-#include <filesystem>
 #include <thread>
 #include "../taskqueue.h"
 #include "../Utils.h"
@@ -64,15 +63,19 @@ void Start() {
   TCPsoc->CreateSocket(hostname, ServerTCP_Port, hints);
   TCPsoc->Bind();
 
+  auto sinfo = reinterpret_cast<sockaddr_in*>(TCPsoc->a_info->ai_addr);
+  sinfo->sin_port = u_short(std::stol(TCPsoc->PortStr, NULL, 0));
+  serverTCP.Data(GetIPAddress(sinfo));
+
+  SecureZeroMemory(&hints, sizeof(hints));
+  hints.ai_family = AF_INET;        // IPv4
   hints.ai_socktype = SOCK_DGRAM;
   hints.ai_protocol = IPPROTO_UDP;
+  hints.ai_flags = AI_PASSIVE;
   SocketInfo* UDPsoc = &serverUDP.sinfo;
   UDPsoc->CreateSocket(hostname, ServerUDP_Port, hints);
   UDPsoc->Bind();
 
-  auto sinfo = reinterpret_cast<sockaddr_in*>(TCPsoc->a_info->ai_addr);
-  sinfo->sin_port = u_short(std::stol(TCPsoc->PortStr, NULL, 0));
-  serverTCP.Data(GetIPAddress(sinfo));
 
   sinfo = reinterpret_cast<sockaddr_in*>(UDPsoc->a_info->ai_addr);
   sinfo->sin_port = u_short(std::stol(UDPsoc->PortStr, NULL, 0));
@@ -81,6 +84,10 @@ void Start() {
   std::cout << "Server IP Address: " << GetIPAddress(sinfo, false) << "\n";
   std::cout << "Server TCP Port Number: " << TCPsoc->PortStr << "\n";
   std::cout << "Server UDP Port Number: " << UDPsoc->PortStr << "\n";
+  freeaddrinfo(TCPsoc->a_info);
+  freeaddrinfo(UDPsoc->a_info);
+  TCPsoc->a_info = NULL;
+  UDPsoc->a_info = NULL;
 }
 
 
@@ -129,15 +136,20 @@ bool ExecuteSocket(SOCKET soc) {
   std::string clientMsg{}, replyMsg{}, serverMsg;
 
   Connection* conn{ nullptr };
-  auto FindCon = [](SOCKET soc) -> Connection* {
+  auto FindCon = [](SOCKET soc, int* ID) -> Connection* {
+    int i{};
     for (auto& con : TCP_List) {
       if (con.sinfo.soc == soc) {
+        if (ID) {
+          *ID = i;
+        }
         return &con;
       }
+      i++;
     }
     return nullptr;
     };
-  conn = FindCon(soc);
+  conn = FindCon(soc, nullptr);
   if (!conn)return false;
   u_long mode = 1;
   ioctlsocket(soc, FIONBIO, &mode);
@@ -159,7 +171,6 @@ bool ExecuteSocket(SOCKET soc) {
 
     buffer[bytesReceieved] = '\0'; // Cut off data
     CMDID commandID = static_cast<CMDID>(buffer[0]);
-    namespace fs = std::filesystem;
     if (commandID == REQ_QUIT) {
       buffer[0] = commandID;
       send(soc, buffer, 1, 0);
@@ -239,12 +250,90 @@ bool ExecuteSocket(SOCKET soc) {
       std::cout << "Opening: " << DL_File.string() << std::endl;
 #endif
 // target port no
+      uint32_t target_ip = ntohl(*reinterpret_cast<uint32_t*>(&buffer[1]));
       uint16_t target_port = ntohs(*reinterpret_cast<uint16_t*>(&buffer[5]));
+      // Create client - server udp connection
+      struct sockaddr_in clientAddr;
+      SecureZeroMemory(&clientAddr, sizeof(clientAddr));
+      clientAddr.sin_family = AF_INET;
+      clientAddr.sin_port = *reinterpret_cast<uint16_t*>(&buffer[5]);
+      //memcpy(&clientAddr.sin_addr, reinterpret_cast<uint32_t*>(&buffer[1]), sizeof(uint32_t));
+      memcpy(&clientAddr.sin_addr, &target_ip, sizeof(uint32_t));
+      char str[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &target_ip, str, INET_ADDRSTRLEN);
 
       std::stringstream ss;
-      ss << serverTCP.IPS << ":" << target_port << std::endl;
+      ss << str << ":" << target_port;
       ReplyFormat(ss.str());
+      // Find Session
+      int SessionID;
+      auto con = FindCon(soc, &SessionID);
+      // Reply Chunk Format
+      /*
+      CMDID       (1): Command ID
+      IP          (4): Server's IP
+      Port Number (2): Server's port
+      Session ID  (4): Sessions
+      */
+      uint32_t SID_Network = htonl(SessionID);
+      file.seekg(0, std::ios::end);
+      uint32_t filelength = static_cast<uint32_t>(file.tellg());
+      file.seekg(0, std::ios::beg);
+      uint32_t filelength_Network = htonl(filelength);
+      {
+        char* NotifReply = new char[BUF_LEN];
+        NotifReply[0] = commandID;
+        memcpy(NotifReply + 1, &serverUDP.NIP32, sizeof(uint32_t));
+        memcpy(NotifReply + 5, reinterpret_cast<uint16_t*>(&buffer[5]), sizeof(uint32_t));
+        memcpy(NotifReply + 7, &SID_Network, sizeof(uint32_t));
+        memcpy(NotifReply + 11, &filelength_Network, sizeof(uint32_t));
+        memcpy(NotifReply + 15, buffer + 7, sizeof(uint32_t));
+        memcpy(NotifReply + 19, fileName.c_str(), fn_len);
+        send(soc, NotifReply, 19 + fn_len, 0);
+        delete[] NotifReply;
+      }
 
+      // Reliable Header stuffs
+      /*
+      Session ID    (4)
+      Flags         (1)
+      Sequence No   (4)
+      File Length   (4)
+      File Offset   (4)
+      File Data Len (4)
+      File Data     (n)
+      */
+      uint8_t LSB = 0;
+      uint32_t sequenceNumber = 0, fileLength{ filelength_Network }, fileoffset{ 13 };
+
+      UDPMessage UDPChunk;
+      UDPChunk.SessionID = SID_Network;
+      UDPChunk.Flags = LSB;
+      UDPChunk.FileLen = filelength;
+      size_t ChunkDataSize = std::min<size_t>(filelength, BUF_LEN - 22);
+      size_t remainingData = filelength;
+      while (file) {
+        UDPChunk.FileData.resize(ChunkDataSize);
+        file.read(UDPChunk.FileData.data(), ChunkDataSize);
+        size_t bytesRead = file.gcount();
+        if (file.gcount() > 0) {
+          UDPChunk.SeqNo = htonl(sequenceNumber++);
+          UDPChunk.FileDataLen = UDPChunk.FileData.size();
+          UDPChunk.CreateBuffer(buffer);
+          int DGRAM_Sent = sendto(serverUDP.sinfo.soc, buffer, UDPChunk.Size(), 0, reinterpret_cast<sockaddr*>(&clientAddr), sizeof(clientAddr));
+          if (DGRAM_Sent == SOCKET_ERROR) {
+            ErrMsg("sendto");
+          }
+        }
+        UDPChunk.FileData.clear();
+        remainingData -= ChunkDataSize;
+        ChunkDataSize = remainingData;
+      }
+      file.close();
+      //memset(buffer, '\0', BUF_LEN);
+      //int sizeofClientAddr = sizeof(clientAddr);
+      //std::this_thread::sleep_for(std::chrono::milliseconds(Ack_Timer));
+      //int DGRAM_Recv = recvfrom(serverUDP.sinfo.soc, buffer, UDPChunk.Size(), 0, reinterpret_cast<sockaddr*>(&clientAddr), &sizeofClientAddr);
 
     }
   }
